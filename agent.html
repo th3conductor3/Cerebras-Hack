@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cerebras Chatbot (OpenRouter & Image Generation)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        inter: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1f2937; /* Darker blue-gray background (gray-900) */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh; /* Ensures it takes full viewport height */
+            margin: 0;
+            padding: 20px; /* General padding around the main container */
+            box-sizing: border-box;
+        }
+        /* Custom scrollbar for chat history */
+        .chat-history::-webkit-scrollbar {
+            width: 8px;
+        }
+        .chat-history::-webkit-scrollbar-track {
+            background: #374151; /* Darker scrollbar track (gray-700) */
+            border-radius: 10px;
+        }
+        .chat-history::-webkit-scrollbar-thumb {
+            background: #3b82f6; /* Blue scrollbar thumb (blue-500) */
+            border-radius: 10px;
+        }
+        .chat-history::-webkit-scrollbar-thumb:hover {
+            background: #2563eb; /* Darker blue on hover (blue-600) */
+        }
+        .image-loading-placeholder { /* Specific style for image loading */
+            min-width: 150px;
+            min-height: 150px;
+            background-color: #374151; /* Darker gray for placeholder (gray-700) */
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            color: #9ca3af; /* Lighter gray text for placeholder (gray-400) */
+            text-align: center;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        .text-loading-placeholder { /* Specific style for text summarization loading */
+            min-width: 150px;
+            min-height: 100px; /* Adjusted height for text */
+            background-color: #374151; /* Darker gray for placeholder (gray-700) */
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            color: #9ca3af; /* Lighter gray text for placeholder (gray-400) */
+            text-align: center;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+    </style>
+</head>
+<body class="font-inter">
+    <div class="bg-gray-900 p-6 rounded-xl shadow-lg w-full max-w-4xl flex flex-col h-[90vh] md:h-[95vh] lg:h-[95vh]">
+        <h1 class="text-3xl font-bold text-center text-blue-400 mb-6">Cerebras Chatbot</h1>
+
+        <div class="mb-4">
+            <label for="mode-select" class="block text-sm font-medium text-gray-300 mb-1">Select Mode:</label>
+            <select id="mode-select" class="w-auto p-3 border border-blue-700 rounded-md focus:ring-blue-500 focus:border-blue-500 shadow-sm bg-blue-800 text-blue-100">
+                <option value="chat">Chat with Qwen 32b</option>
+                <option value="image">Generate Image</option>
+                <option value="summarize">Summarize Text</option> </select>
+        </div>
+
+        <div id="chat-history" class="flex-grow overflow-y-auto bg-gray-800 p-4 rounded-lg mb-4 space-y-4 shadow-inner border border-gray-700 chat-history">
+            <div class="flex justify-start">
+                <div class="bg-gray-700 text-gray-100 p-3 rounded-lg max-w-[80%] shadow">
+                    <p class="font-semibold">Qwen 32b:</p>
+                    <p id="initial-greeting">Hello! How can I assist you today? You can select a mode above to chat or generate images.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="space-y-4">
+            <div>
+                <label for="user-message" class="block text-sm font-medium text-gray-300 mb-1">Your Message:</label>
+                <textarea id="user-message" rows="3" class="w-full p-3 border border-gray-700 rounded-md focus:ring-blue-500 focus:border-blue-500 shadow-sm bg-gray-800 text-gray-100 resize-none" placeholder="Type your message here..."></textarea>
+            </div>
+
+            <button id="send-button" class="w-full bg-gray-700 text-white p-3 rounded-md font-semibold hover:bg-gray-600 transition duration-300 ease-in-out shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                Send Message
+            </button>
+
+            <div id="loading-indicator" class="text-center text-blue-400 font-medium hidden">
+                Sending... Please wait.
+            </div>
+            <div id="error-message" class="text-center text-red-500 font-medium hidden">
+                </div>
+        </div>
+    </div>
+
+    <script>
+        // Hardcoded OpenRouter API Key and System Prompt
+        const OPENROUTER_API_KEY = "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";
+        const SYSTEM_PROMPT = "You are a helpful assistant.";
+
+        // Get references to DOM elements
+        const userMessageInput = document.getElementById('user-message');
+        const sendButton = document.getElementById('send-button');
+        const chatHistoryDiv = document.getElementById('chat-history');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const errorMessageDiv = document.getElementById('error-message');
+        const modeSelect = document.getElementById('mode-select');
+        const initialGreetingElement = document.getElementById('initial-greeting');
+
+        // Initial placeholder text for the message input
+        const chatPlaceholder = "Type your message here...";
+        const imagePlaceholder = "Describe the image you want to generate (e.g., a futuristic city at sunset)...";
+        const summarizePlaceholder = "Paste the text you want to summarize here..."; // Updated placeholder
+
+        // Greeting messages for different modes
+        const chatGreeting = "Hello! We are in chat mode. How can I assist you today?";
+        const imageGreeting = "Hello! We are in image generation mode. Describe the image you'd like me to create!";
+        const summarizeGreeting = "Hello! We are in text summarization mode. Please paste the text you want me to summarize."; // Updated greeting
+
+        /**
+         * Updates the placeholder text and the initial greeting message based on the selected mode.
+         */
+        function updatePlaceholderAndGreeting() {
+            if (modeSelect.value === 'image') {
+                userMessageInput.placeholder = imagePlaceholder;
+                initialGreetingElement.textContent = imageGreeting;
+            } else if (modeSelect.value === 'summarize') { // Changed condition to 'summarize'
+                userMessageInput.placeholder = summarizePlaceholder;
+                initialGreetingElement.textContent = summarizeGreeting;
+            }
+            else {
+                userMessageInput.placeholder = chatPlaceholder;
+                initialGreetingElement.textContent = chatGreeting;
+            }
+        }
+
+        /**
+         * Appends a new message to the chat history.
+         * @param {string} sender - 'user' or 'qwen32b'.
+         * @param {string} message - The message content.
+         */
+        function appendMessage(sender, message) {
+            const messageContainer = document.createElement('div');
+            const messageBubble = document.createElement('div');
+            const senderLabel = document.createElement('p');
+            const messageContent = document.createElement('p');
+
+            senderLabel.classList.add('font-semibold', 'mb-1');
+            messageContent.textContent = message;
+
+            if (sender === 'user') {
+                messageContainer.classList.add('flex', 'justify-end');
+                messageBubble.classList.add('bg-gray-700', 'text-white', 'p-3', 'rounded-lg', 'max-w-[80%]', 'shadow');
+                senderLabel.textContent = 'You:';
+            } else { // This is the bot's message
+                messageContainer.classList.add('flex', 'justify-start');
+                messageBubble.classList.add('bg-gray-700', 'text-gray-100', 'p-3', 'rounded-lg', 'max-w-[80%]', 'shadow');
+                senderLabel.textContent = 'Qwen 32b:';
+            }
+
+            messageBubble.appendChild(senderLabel);
+            messageBubble.appendChild(messageContent);
+            messageContainer.appendChild(messageBubble);
+            chatHistoryDiv.appendChild(messageContainer);
+
+            // Scroll to the bottom of the chat history
+            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+        }
+
+        /**
+         * Appends an image message to the chat history.
+         * @param {string} sender - 'qwen32b'.
+         * @param {string} imageUrl - The base64 image URL.
+         * @param {string} caption - A caption for the image.
+         */
+        function appendImageMessage(sender, imageUrl, caption) {
+            const messageContainer = document.createElement('div');
+            const messageBubble = document.createElement('div');
+            const senderLabel = document.createElement('p');
+            const imageElement = document.createElement('img');
+            const captionElement = document.createElement('p');
+            const downloadButton = document.createElement('button');
+
+            senderLabel.classList.add('font-semibold', 'mb-1');
+            senderLabel.textContent = 'Qwen 32b:';
+
+            imageElement.src = imageUrl;
+            imageElement.alt = caption;
+            imageElement.classList.add('max-w-full', 'h-auto', 'rounded-md', 'mt-2', 'shadow-md');
+            imageElement.style.maxWidth = '300px';
+            imageElement.style.maxHeight = '300px';
+
+            captionElement.textContent = caption;
+            captionElement.classList.add('text-xs', 'text-gray-400', 'mt-1');
+
+            downloadButton.textContent = 'Download Image';
+            downloadButton.classList.add('mt-2', 'bg-blue-500', 'hover:bg-blue-600', 'text-white', 'text-sm', 'py-1', 'px-2', 'rounded-md', 'shadow-sm');
+            downloadButton.onclick = () => {
+                const a = document.createElement('a');
+                a.href = imageUrl;
+                a.download = 'generated-image.png';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            };
+
+            messageContainer.classList.add('flex', 'justify-start');
+            messageBubble.classList.add('bg-gray-700', 'text-gray-100', 'p-3', 'rounded-lg', 'max-w-[80%]', 'shadow', 'flex', 'flex-col', 'items-start');
+
+            messageBubble.appendChild(senderLabel);
+            messageBubble.appendChild(imageElement);
+            messageBubble.appendChild(captionElement);
+            messageBubble.appendChild(downloadButton);
+            messageContainer.appendChild(messageBubble);
+            chatHistoryDiv.appendChild(messageContainer);
+
+            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+        }
+
+        /**
+         * Displays an error message to the user.
+         * @param {string} message - The error message to display.
+         */
+        function displayError(message) {
+            errorMessageDiv.textContent = message;
+            errorMessageDiv.classList.remove('hidden');
+        }
+
+        /**
+         * Clears any displayed error messages.
+         */
+        function clearError() {
+            errorMessageDiv.textContent = '';
+            errorMessageDiv.classList.add('hidden');
+        }
+
+        /**
+         * Sets the loading state of the UI.
+         * @param {boolean} isLoading - True to show loading, false to hide.
+         * @param {string} [message] - Optional loading message.
+         */
+        function setLoadingState(isLoading, message = "Sending... Please wait.") {
+            if (isLoading) {
+                loadingIndicator.textContent = message;
+                loadingIndicator.classList.remove('hidden');
+                sendButton.disabled = true;
+                sendButton.classList.add('opacity-50', 'cursor-not-allowed');
+            } else {
+                loadingIndicator.classList.add('hidden');
+                sendButton.disabled = false;
+                sendButton.classList.remove('opacity-50', 'cursor-not-allowed');
+                loadingIndicator.textContent = "Sending... Please wait.";
+            }
+        }
+
+        /**
+         * Calls the Imagen API to generate a single image.
+         * @param {string} promptText - The text prompt for the image generation model.
+         * @returns {Promise<string>} - A promise that resolves with the base64 image URL.
+         */
+        async function generateImage(promptText) {
+            const apiKey = "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`;
+            const payload = { instances: { prompt: promptText }, parameters: { "sampleCount": 1 } };
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(`Imagen API Error: ${response.status} - ${errorData.error ? errorData.error.message : JSON.stringify(errorData)}`);
+                }
+
+                const result = await response.json();
+
+                if (result.predictions && result.predictions.length > 0 && result.predictions[0].bytesBase64Encoded) {
+                    return `data:image/png;base64,${result.predictions[0].bytesBase64Encoded}`;
+                } else {
+                    console.error("Unexpected Imagen API response structure:", result);
+                    throw new Error("Could not generate image from Imagen API.");
+                }
+            } catch (error) {
+                console.error("Error calling Imagen API:", error);
+                throw error;
+            }
+        }
+
+        /**
+         * Calls the Gemini API to summarize text.
+         * @param {string} textToSummarize - The text to be summarized.
+         * @returns {Promise<string>} - A promise that resolves with the summarized text.
+         */
+        async function callGeminiForSummary(textToSummarize) {
+            const geminiApiKey = ""; // Canvas will inject this
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`;
+
+            let chatHistory = [];
+            chatHistory.push({ role: "user", parts: [{ text: `Summarize the following text concisely:\n\n${textToSummarize}` }] });
+
+            const payload = { contents: chatHistory };
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(`Gemini API Error: ${response.status} - ${errorData.error ? errorData.error.message : JSON.stringify(errorData)}`);
+                }
+
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    return result.candidates[0].content.parts[0].text;
+                } else {
+                    console.error("Unexpected Gemini API response structure:", result);
+                    throw new Error("Could not get a valid summary from Gemini API.");
+                }
+            } catch (error) {
+                console.error("Error calling Gemini API for summarization:", error);
+                throw error;
+            }
+        }
+
+        /**
+         * Handles sending the message based on the selected mode.
+         */
+        async function sendMessage() {
+            clearError();
+            const userMessage = userMessageInput.value.trim();
+            const selectedMode = modeSelect.value;
+
+            if (!userMessage) {
+                displayError("Please type your message.");
+                return;
+            }
+
+            // Append user message to chat history immediately
+            appendMessage('user', userMessage);
+            userMessageInput.value = ''; // Clear user input field
+
+            if (selectedMode === 'image') {
+                setLoadingState(true, "Generating image... Please wait.");
+                try {
+                    // Placeholder for image generation
+                    const placeholder = document.createElement('div');
+                    placeholder.classList.add('image-loading-placeholder', 'max-w-[80%]', 'p-3', 'rounded-lg', 'shadow', 'mt-2', 'mb-2');
+                    placeholder.textContent = `Generating image for "${userMessage}"...`;
+                    const messageContainer = document.createElement('div');
+                    messageContainer.classList.add('flex', 'justify-start');
+                    messageContainer.appendChild(placeholder);
+                    chatHistoryDiv.appendChild(messageContainer);
+                    chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+
+                    const imageUrl = await generateImage(userMessage);
+                    placeholder.remove();
+                    appendImageMessage('qwen32b', imageUrl, `Generated image for: "${userMessage}"`);
+                } catch (error) {
+                    console.error("Image generation error:", error);
+                    displayError(`Failed to generate image: ${error.message}`);
+                } finally {
+                    setLoadingState(false);
+                }
+            } else if (selectedMode === 'summarize') { // Changed condition from 'summarize-website' to 'summarize'
+                setLoadingState(true, "Summarizing text... Please wait.");
+                try {
+                    // Placeholder for summarization
+                    const placeholder = document.createElement('div');
+                    placeholder.classList.add('text-loading-placeholder', 'max-w-[80%]', 'p-3', 'rounded-lg', 'shadow', 'mt-2', 'mb-2');
+                    placeholder.textContent = `Summarizing text...`;
+                    const messageContainer = document.createElement('div');
+                    messageContainer.classList.add('flex', 'justify-start');
+                    messageContainer.appendChild(placeholder);
+                    chatHistoryDiv.appendChild(messageContainer);
+                    chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+
+                    const summarizedText = await callGeminiForSummary(userMessage); // Pass userMessage directly
+                    placeholder.remove();
+                    appendMessage('qwen32b', `Here's the summary:\n\n"${summarizedText}"`);
+                } catch (error) {
+                    console.error("Summarization error:", error);
+                    displayError(`Failed to summarize text: ${error.message}`);
+                } finally {
+                    setLoadingState(false);
+                }
+            }
+            else { // Default to chat mode
+                setLoadingState(true, "Sending message... Please wait.");
+                const url = "https://openrouter.ai/api/v1/chat/completions";
+                const headers = {
+                    "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+                    "Content-Type": "application/json"
+                };
+                const data = {
+                    "model": "meta-llama/llama-3.3-70b-instruct",
+                    "provider": { "only": ["Cerebras"] },
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": userMessage}
+                    ]
+                };
+
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(data),
+                        timeout: 30000
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(`API Error: ${response.status} - ${errorData.message || JSON.stringify(errorData)}`);
+                    }
+
+                    const respJson = await response.json();
+
+                    if (respJson.choices && respJson.choices.length > 0 && respJson.choices[0].message && respJson.choices[0].message.content) {
+                        const botReply = respJson.choices[0].message.content;
+                        appendMessage('qwen32b', botReply);
+                    } else {
+                        displayError("Unexpected API response format.");
+                        console.error("Unexpected API response:", respJson);
+                    }
+
+                } catch (error) {
+                    console.error("Fetch error:", error);
+                    displayError(`Failed to get response: ${error.message}`);
+                } finally {
+                    setLoadingState(false);
+                }
+            }
+        }
+
+        // Attach event listener to the send button
+        sendButton.addEventListener('click', sendMessage);
+
+        // Allow sending message with Enter key in the message input
+        userMessageInput.addEventListener('keypress', function(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault(); // Prevent new line
+                sendMessage();
+            }
+        });
+
+        // Event listener for mode selection change
+        modeSelect.addEventListener('change', updatePlaceholderAndGreeting);
+
+        // Initialize placeholder and greeting on load
+        updatePlaceholderAndGreeting();
+    </script>
+</body>
+</html>
